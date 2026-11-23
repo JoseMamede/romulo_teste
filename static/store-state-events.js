@@ -15,6 +15,7 @@ export function setupStoreEvents(store) {
     DRAFTS_KEY,
     FAVORITES_KEY,
     getCloudClient,
+    isUuid,
     iconIsFavorite,
     isFavorite,
     LISTS_KEY,
@@ -46,11 +47,29 @@ export function setupStoreEvents(store) {
     renderLocalReviews,
   } = store;
 
+  const productIdFromCard = (element) => {
+    const productId = element?.closest?.("[data-product-id]")?.dataset.productId || element?.dataset.productId;
+    return isUuid(productId) ? productId : undefined;
+  };
+
+  const addPublishedProduct = (name, price, productId, announceFailure = true) => {
+    if (!isUuid(productId)) {
+      if (announceFailure) notifyLocal("Este cartão é demonstrativo e não está vinculado a um produto publicado. Para comprar, escolha um produto em /catalogo.");
+      return false;
+    }
+
+    const added = addToCart(name, price, 1, productId);
+    if (!added && announceFailure) {
+      notifyLocal("Remova itens demonstrativos ou antigos do carrinho antes de adicionar produtos publicados.");
+    }
+    return added;
+  };
+
   /**
    * Adiciona um produto ao carrinho e exibe feedback.
    */
-  window.addToCart = (name, price) => {
-    addToCart(name, price);
+  window.addToCart = (name, price, productId) => {
+    return addPublishedProduct(name, price, productId);
   };
 
   /**
@@ -69,16 +88,17 @@ export function setupStoreEvents(store) {
    */
   window.addToCartAnimation = () => {
     const name = document.querySelector("main h1")?.textContent.trim() || "Caminho de Mesa em Renda Labirinto Ponto Palito";
-    addToCart(name, 145);
-    window.showToast?.(`${name} adicionado ao carrinho.`);
+    const productId = productIdFromCard(document.getElementById("btn-add-cart"));
+    const added = addPublishedProduct(name, 145, productId);
+    if (added) window.showToast?.(`${name} adicionado ao carrinho.`);
+    return added;
   };
 
   /**
    * Realiza a compra rápida via Pix adicionando o item atual e redirecionando para o carrinho.
    */
   window.quickPixCheckout = () => {
-    window.addToCartAnimation();
-    window.location.assign("/carrinho_compras");
+    if (window.addToCartAnimation()) window.location.assign("/carrinho_compras");
   };
 
   /**
@@ -91,8 +111,9 @@ export function setupStoreEvents(store) {
       notifyLocal("Não foi possível identificar o preço deste produto.");
       return;
     }
-    addToCart(name, price);
-    window.showToast?.(`${name} adicionado ao carrinho.`);
+    if (addPublishedProduct(name, price, productIdFromCard(card))) {
+      window.showToast?.(`${name} adicionado ao carrinho.`);
+    }
   };
 
   /**
@@ -148,7 +169,7 @@ export function setupStoreEvents(store) {
           }).select("id, slug, name, description, price, stock").single();
           if (error) throw error;
           const remoteProducts = readList(CLOUD_PRODUCTS_KEY, []);
-          remoteProducts.unshift({ ...data, id: `cloud-${data.id}`, story: data.description, price: Number(data.price) });
+          remoteProducts.unshift({ ...data, id: `cloud-${data.id}`, product_id: data.id, story: data.description, price: Number(data.price) });
           localStorage.setItem(CLOUD_PRODUCTS_KEY, JSON.stringify(remoteProducts));
           notifyLocal("Produto publicado no catálogo do Supabase.");
         } else {
@@ -252,28 +273,58 @@ export function setupStoreEvents(store) {
     const addButton = target.closest(".btn-add-cart, button[aria-label^='Adicionar à Cesta']");
     if (addButton) {
       const card = addButton.closest(".product-card, article");
-      addToCart(productNameFromCard(card), productPriceFromCard(card));
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (addPublishedProduct(productNameFromCard(card), productPriceFromCard(card), productIdFromCard(card))) {
+        window.showToast?.(`${productNameFromCard(card)} adicionado ao carrinho.`);
+      }
+      return;
     }
 
     // Move todos os produtos visíveis para o carrinho
     const moveAllButton = target.closest("#btn-move-all");
     if (moveAllButton) {
+      let rejected = false;
+      let addedCount = 0;
       document.querySelectorAll(".product-card").forEach((card) => {
         const name = productNameFromCard(card);
         const price = productPriceFromCard(card);
-        if (price) addToCart(name, price);
+        if (!price) return;
+        if (addPublishedProduct(name, price, productIdFromCard(card), false)) addedCount += 1;
+        else rejected = true;
       });
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (addedCount) window.showToast?.(`${addedCount} produto(s) adicionado(s) ao carrinho.`);
+      if (rejected) notifyLocal("Itens sem UUID válido do Supabase não foram adicionados.");
+      return;
     }
 
     // Adiciona em massa os produtos selecionados (checkbox) dos favoritos ao carrinho
     const addSelected = target.closest("#btn-bulk-cart");
     if (addSelected) {
-      document.querySelectorAll("#favorites-grid .product-card").forEach((card) => {
-        if (!card.querySelector(".product-checkbox")?.checked) return;
+      let rejected = false;
+      let addedCount = 0;
+      const selectedCards = [...document.querySelectorAll("#favorites-grid .product-card")]
+        .filter((card) => card.querySelector(".product-checkbox")?.checked);
+      selectedCards.forEach((card) => {
         const name = productNameFromCard(card);
         const price = parsePrice(card.dataset.price);
-        if (price) addToCart(name, price);
+        if (!price) return;
+        if (addPublishedProduct(name, price, productIdFromCard(card), false)) addedCount += 1;
+        else rejected = true;
       });
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      selectedCards.forEach((card) => {
+        const checkbox = card.querySelector(".product-checkbox");
+        if (!checkbox) return;
+        checkbox.checked = false;
+        checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      if (addedCount) window.showToast?.(`${addedCount} produto(s) adicionado(s) ao carrinho.`);
+      if (rejected) notifyLocal("Itens sem UUID válido do Supabase não foram adicionados.");
+      return;
     }
 
     // Remove em massa os produtos selecionados dos favoritos
@@ -327,7 +378,7 @@ export function setupStoreEvents(store) {
   updateCatalogCount();
   
   // Carrega produtos do Supabase se estiver na grade de produtos ou no painel de produtores
-  if (document.getElementById("product-grid") || location.pathname.includes("painel_produtores")) {
+  if (document.getElementById("catalog-search") || location.pathname.includes("painel_produtores")) {
     loadCloudProducts().catch((error) => notifyLocal(error.message || "Não foi possível carregar o catálogo do Supabase."));
   }
   

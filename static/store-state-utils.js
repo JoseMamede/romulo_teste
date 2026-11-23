@@ -14,12 +14,16 @@ export const DRAFTS_KEY = "feito-serido.product-drafts.v1";
 export const REVIEWS_KEY = "feito-serido.reviews.v1";
 export const CLOUD_REVIEWS_KEY = "feito-serido.cloud-reviews.v1";
 
+export function isUuid(value) {
+    return typeof value === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
+  }
+
 // Carrinho de compras padrão para demonstração inicial da plataforma
 export const DEMO_CART = [
-    { id: "item-renda-1", name: "Caminho de Mesa em Renda Labirinto Ponto Palito", price: 145, quantity: 1 },
-    { id: "item-renda-2", name: "Toalha de Lavabo Bordada Flor de Mandacaru", price: 35, quantity: 2 },
-    { id: "item-queijo-1", name: "Queijo de Coalho Curado na Caatinga 800g", price: 42.5, quantity: 1 },
-    { id: "item-vaso-1", name: "Vaso em Cerâmica Terracota com Trançado", price: 92, quantity: 1 },
+    { id: "item-renda-1", name: "Caminho de Mesa em Renda Labirinto Ponto Palito", price: 145, quantity: 1, is_demo: true },
+    { id: "item-renda-2", name: "Toalha de Lavabo Bordada Flor de Mandacaru", price: 35, quantity: 2, is_demo: true },
+    { id: "item-queijo-1", name: "Queijo de Coalho Curado na Caatinga 800g", price: 42.5, quantity: 1, is_demo: true },
+    { id: "item-vaso-1", name: "Vaso em Cerâmica Terracota com Trançado", price: 92, quantity: 1, is_demo: true },
   ];
 
 // Mapeamento estático para identificadores padronizados de produtos conhecidos

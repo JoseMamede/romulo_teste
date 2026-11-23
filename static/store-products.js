@@ -4,9 +4,61 @@
  * de cadastro de novas peças, renderização dinâmica na interface e sincronização com o Supabase.
  */
 
-import { CLOUD_PRODUCTS_KEY, PRODUCTS_KEY, formatBRL, getCloudClient, parsePrice, productId, readList } from "./store-state-utils.js";
+import { CLOUD_PRODUCTS_KEY, PRODUCTS_KEY, formatBRL, getCloudClient, isUuid, parsePrice, productId, readList } from "./store-state-utils.js";
 
 export function createProductStore({ notifyLocal }) {
+  let publishedProducts = [];
+
+  function setCatalogStatus(message) {
+    const status = document.getElementById("catalog-status");
+    if (!status) return;
+    status.textContent = message;
+    status.classList.toggle("hidden", !message);
+  }
+
+  function makeCatalogProductCard(product) {
+    const card = document.createElement("article");
+    card.dataset.localProduct = `cloud-${product.product_id}`;
+    card.dataset.productId = product.product_id;
+    card.className = "group bg-surface-container-lowest rounded-2xl shadow-sm hover:shadow-xl transition-all duration-300 flex flex-col overflow-hidden relative";
+
+    const imagePlaceholder = document.createElement("div");
+    imagePlaceholder.className = "relative w-full aspect-[4/3] bg-surface-container-low flex items-center justify-center text-outline";
+    const imageIcon = document.createElement("span");
+    imageIcon.className = "material-symbols-outlined text-[48px]";
+    imageIcon.textContent = "storefront";
+    imagePlaceholder.appendChild(imageIcon);
+
+    const content = document.createElement("div");
+    content.className = "p-4 flex-1 flex flex-col justify-between space-y-3";
+
+    const details = document.createElement("div");
+    const title = document.createElement("h3");
+    title.className = "font-headline-sm text-[17px] text-on-surface font-semibold leading-snug";
+    title.textContent = product.name;
+    const description = document.createElement("p");
+    description.className = "font-body-sm text-body-sm text-on-surface-variant mt-2";
+    description.textContent = product.story || "Produto publicado no catálogo do Seridó.";
+    details.append(title, description);
+
+    const footer = document.createElement("div");
+    footer.className = "pt-2 border-t border-surface-container flex items-end justify-between";
+    const price = document.createElement("span");
+    price.className = "font-headline-sm text-headline-sm text-primary font-bold";
+    price.textContent = formatBRL(product.price);
+
+    const add = document.createElement("button");
+    add.type = "button";
+    add.className = "w-10 h-10 rounded-xl bg-primary hover:bg-primary-container text-on-primary flex items-center justify-center transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed";
+    add.setAttribute("aria-label", product.stock > 0 ? "Adicionar à Cesta" : "Produto sem estoque");
+    add.disabled = product.stock <= 0;
+    add.textContent = product.stock > 0 ? "+" : "—";
+    footer.append(price, add);
+
+    content.append(details, footer);
+    card.append(imagePlaceholder, content);
+    return card;
+  }
   
   /**
    * Atualiza os contadores e textos de resumo de produtos visíveis e carregados no catálogo.
@@ -92,10 +144,20 @@ export function createProductStore({ notifyLocal }) {
    * Cria dinamicamente os elementos HTML para cada card de produto na grade e no painel de produtores.
    */
   function renderLocalProducts() {
-    const products = [...readList(CLOUD_PRODUCTS_KEY, []), ...readList(PRODUCTS_KEY, [])];
     const grid = document.getElementById("product-grid");
+    const isCatalog = Boolean(grid && document.getElementById("catalog-search"));
+    const products = isCatalog ? [] : [...readList(CLOUD_PRODUCTS_KEY, []), ...readList(PRODUCTS_KEY, [])];
     
-    if (grid) {
+    if (isCatalog) {
+      grid.querySelectorAll(":scope > article").forEach((card) => card.remove());
+      publishedProducts
+        .filter((product) => isUuid(product.product_id))
+        .forEach((product) => grid.appendChild(makeCatalogProductCard(product)));
+      updateCatalogCount();
+      return;
+    }
+
+    if (grid && location.pathname.includes("painel_produtores")) {
       // Remove produtos locais antigos da exibição para evitar duplicação
       grid.querySelectorAll("[data-local-product]").forEach((card) => card.remove());
       
@@ -103,6 +165,7 @@ export function createProductStore({ notifyLocal }) {
       products.forEach((product) => {
         const card = document.createElement("article");
         card.dataset.localProduct = product.id;
+        if (isUuid(product.product_id)) card.dataset.productId = product.product_id;
         card.className = "flex flex-col gap-3 rounded-xl bg-surface-container-lowest p-4 shadow-sm";
         
         const title = document.createElement("h3");
@@ -165,7 +228,7 @@ export function createProductStore({ notifyLocal }) {
       main.prepend(section);
     }
     
-    updateCatalogCount();
+    if (grid) updateCatalogCount();
   }
 
   /**
@@ -173,31 +236,68 @@ export function createProductStore({ notifyLocal }) {
    * Filtra por proprietário se estiver no painel de produtores ou apenas itens publicados para o público geral.
    */
   async function loadCloudProducts() {
-    const client = await getCloudClient();
-    if (!client) return;
-    
-    let query = client.from("products").select("id, slug, name, description, price, stock, status");
-    if (location.pathname.includes("painel_produtores")) {
-      const { data: { user } } = await client.auth.getUser();
-      query = user ? query.eq("owner_id", user.id) : query.eq("status", "published");
-    } else {
-      query = query.eq("status", "published");
+    const isCatalog = Boolean(document.getElementById("catalog-search"));
+    if (isCatalog) setCatalogStatus("Carregando produtos publicados...");
+
+    try {
+      const client = await getCloudClient();
+      if (!client) {
+        if (isCatalog) {
+          publishedProducts = [];
+          renderLocalProducts();
+          setCatalogStatus("Catálogo temporariamente indisponível. Tente novamente mais tarde.");
+        }
+        return;
+      }
+
+      let query = client.from("products").select("id, slug, name, description, price, stock, status");
+      if (location.pathname.includes("painel_produtores")) {
+        const { data: { user } } = await client.auth.getUser();
+        query = user ? query.eq("owner_id", user.id) : query.eq("status", "published");
+      } else {
+        query = query.eq("status", "published");
+      }
+
+      const { data, error } = await query.order("created_at", { ascending: false });
+      if (error) throw error;
+
+      const products = (data || [])
+        .filter((item) => {
+          const price = Number(item.price);
+          const stock = Number(item.stock);
+          return isUuid(item.id)
+            && (!isCatalog || item.status === "published")
+            && Number.isFinite(price)
+            && price > 0
+            && Number.isInteger(stock)
+            && stock >= 0;
+        })
+        .map((item) => ({
+          id: `cloud-${item.id}`,
+          product_id: item.id,
+          slug: item.slug,
+          name: item.name,
+          story: item.description,
+          price: Number(item.price),
+          stock: Number(item.stock),
+        }));
+
+      localStorage.setItem(CLOUD_PRODUCTS_KEY, JSON.stringify(products));
+      if (isCatalog) {
+        publishedProducts = products;
+        renderLocalProducts();
+        setCatalogStatus(products.length ? "" : "Nenhum produto publicado disponível no momento.");
+      } else {
+        renderLocalProducts();
+      }
+    } catch (error) {
+      if (isCatalog) {
+        publishedProducts = [];
+        renderLocalProducts();
+        setCatalogStatus("Catálogo temporariamente indisponível. Tente novamente mais tarde.");
+      }
+      throw error;
     }
-    
-    const { data, error } = await query.order("created_at", { ascending: false });
-    if (error) throw error;
-    
-    const products = (data || []).map((item) => ({
-      id: `cloud-${item.id}`,
-      slug: item.slug,
-      name: item.name,
-      story: item.description,
-      price: Number(item.price),
-      stock: item.stock,
-    }));
-    
-    localStorage.setItem(CLOUD_PRODUCTS_KEY, JSON.stringify(products));
-    renderLocalProducts();
   }
 
   return { updateCatalogCount, setupCatalogSearch, productFormData, renderLocalProducts, loadCloudProducts };

@@ -4,17 +4,24 @@
  * renderização de linhas de produtos na tela, cálculos de subtotais, descontos por PIX e totais gerais.
  */
 
-import { CART_KEY, DEMO_CART, formatBRL, parsePrice, productId, readList } from "./store-state-utils.js";
+import { CART_KEY, DEMO_CART, formatBRL, isUuid, parsePrice, readList } from "./store-state-utils.js";
 
 export function createCartStore({ updateCounters }) {
+  const demoItemIds = new Set(DEMO_CART.map((item) => item.id));
   
   /**
-   * Recupera e valida todos os itens válidos armazenados no carrinho.
-   * Filtra elementos nulos, IDs inválidos, preços menores que zero ou quantidades zeradas.
+   * Recupera os itens válidos, marcando demos e preservando apenas UUIDs válidos como identidade real.
    * @returns {Array} Lista de itens do carrinho.
    */
   function cartItems() {
-    return readList(CART_KEY, []).filter((item) => item && item.id && Number(item.price) >= 0 && Number(item.quantity) > 0);
+    return readList(CART_KEY, [])
+      .filter((item) => item && item.id && Number(item.price) >= 0 && Number(item.quantity) > 0)
+      .map((item) => {
+        const { product_id: productId, is_demo: isDemo, ...legacyItem } = item;
+        if (isDemo === true || demoItemIds.has(item.id)) return { ...legacyItem, is_demo: true };
+        if (isUuid(productId)) return { ...legacyItem, product_id: productId };
+        return legacyItem;
+      });
   }
 
   /**
@@ -32,19 +39,31 @@ export function createCartStore({ updateCounters }) {
    * @param {string} name - Nome do produto.
    * @param {number|string} price - Preço unitário.
    * @param {number} [quantity=1] - Quantidade a ser adicionada.
+   * @param {string} [supabaseProductId] - UUID original do produto no Supabase; sem ele, a adição é recusada.
    * @returns {boolean} True se adicionado com sucesso, false caso contrário.
    */
-  function addToCart(name, price, quantity = 1) {
+  function addToCart(name, price, quantity = 1, supabaseProductId) {
     const itemName = String(name || "Produto artesanal").trim();
-    const itemId = productId(itemName);
+    const validProductId = isUuid(supabaseProductId) ? supabaseProductId : null;
+    if (!validProductId) return false;
+
     const unitPrice = parsePrice(price);
     if (!unitPrice) return false;
     
     const items = cartItems();
-    const existing = items.find((item) => item.id === itemId);
+    if (items.some((item) => !isUuid(item.product_id))) return false;
+    const existing = items.find((item) => item.product_id === validProductId);
     
     if (existing) existing.quantity += quantity;
-    else items.push({ id: itemId, name: itemName, price: unitPrice, quantity });
+    else {
+      items.push({
+        id: validProductId,
+        product_id: validProductId,
+        name: itemName,
+        price: unitPrice,
+        quantity,
+      });
+    }
     
     saveCart(items);
     return true;
